@@ -198,14 +198,44 @@ describe("buildCursorPrompt", () => {
 
 		const result = buildCursorPrompt(ctx);
 
-		expect(result.text).toContain('Tool call (edit, call edit-call): {"path":"src/a.ts"}');
-		expect(result.text).toContain('Tool call (write, call write-call): {"path":"src/b.ts"}');
+		expect(result.text).toContain('[ran tool edit (call edit-call) args {"path":"src/a.ts"} — historical record, not callable syntax]');
+		expect(result.text).toContain('[ran tool write (call write-call) args {"path":"src/b.ts"} — historical record, not callable syntax]');
 		expect(result.text).toContain("Tool result (edit, call edit-call): edit ok");
 		expect(result.text).toContain("Tool result (write, call write-call): write ok");
-		expect(result.text).not.toContain("Tool call (Cursor edit");
-		expect(result.text).not.toContain("Tool call (Cursor write");
+		expect(result.text).not.toContain("ran tool Cursor edit");
+		expect(result.text).not.toContain("ran tool Cursor write");
 		expect(result.text).not.toContain("Tool result (Cursor edit");
 		expect(result.text).not.toContain("Tool result (Cursor write");
+	});
+
+	it("narrates orphaned tool calls (pruned results) without args or callable-looking syntax", () => {
+		const ctx: Context = {
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Checking the directory." },
+						{ type: "toolCall", id: "pruned-call", name: "bash", arguments: { command: "ls -la /secret" } },
+					],
+					api: "cursor-sdk",
+					provider: "cursor",
+					model: "test",
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					stopReason: "toolUse",
+					timestamp: 1,
+				} satisfies AssistantMessage,
+				// No toolResult for pruned-call — e.g. removed by a context pruner.
+				{ role: "user", content: "continue", timestamp: 2 } satisfies UserMessage,
+			],
+		};
+
+		const result = buildCursorPrompt(ctx);
+
+		expect(result.text).toContain(
+			"[ran tool bash (call pruned-call); result pruned from context — historical record, not callable syntax]",
+		);
+		expect(result.text).not.toContain("ls -la /secret");
+		expect(result.text).not.toContain("Tool call (bash");
 	});
 
 	it("labels canonical neutral Cursor replay activity without rewriting literal transcript text", () => {
@@ -245,9 +275,12 @@ describe("buildCursorPrompt", () => {
 
 		expect(result.text).toContain("User: Please search for the literal string replay_marker.");
 		expect(result.text).toContain("Assistant: I will preserve literal activity_marker text.");
-		expect(result.text).toContain("Tool call (Cursor activity, call activity-call)");
+		expect(result.text).toContain("[ran tool Cursor activity (call activity-call)");
 		expect(result.text).toContain('{"activityTitle":"Cursor MCP","note":"result_marker"}');
-		expect(result.text).toContain('Tool call (bash, call bash-call): {"command":"echo mcp_marker"}');
+		// bash-call has no toolResult in this fixture — narrated as orphaned, args omitted
+		expect(result.text).toContain(
+			"[ran tool bash (call bash-call); result pruned from context — historical record, not callable syntax]",
+		);
 		expect(result.text).toContain("Tool result (Cursor activity, call activity-call): recorded replay_marker result");
 	});
 
@@ -267,7 +300,8 @@ describe("buildCursorPrompt", () => {
 			timestamp: 2,
 		} satisfies AssistantMessage;
 
-		const expected = 'Assistant: I will inspect the directory.\nTool call (bash, call tc1): {"command":"ls"}';
+		const expected =
+			'Assistant: I will inspect the directory.\n[ran tool bash (call tc1) args {"command":"ls"} — historical record, not callable syntax]';
 		expect(estimateCursorPromptMessageTokens(assistant, { charsPerToken: 1 })).toBe(expected.length);
 		expect(expected).not.toContain("hidden reasoning");
 	});
@@ -350,7 +384,9 @@ describe("buildCursorPrompt", () => {
 			],
 		};
 		const result = buildCursorPrompt(ctx);
-		expect(result.text).toContain("Assistant: I will inspect the directory.\nTool call (bash, call tc1): {\"command\":\"ls\"}");
+		expect(result.text).toContain(
+			'Assistant: I will inspect the directory.\n[ran tool bash (call tc1) args {"command":"ls"} — historical record, not callable syntax]',
+		);
 		expect(result.text).toContain("Tool result (bash, call tc1): README.md");
 	});
 

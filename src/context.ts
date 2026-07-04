@@ -126,9 +126,27 @@ function formatContentBlocks(content: string | { type: string; text?: string; da
 		.join("\n");
 }
 
-function formatToolCall(toolCall: ToolCall): string {
+function collectToolResultIds(messages: Message[]): Set<string> {
+	const ids = new Set<string>();
+	for (const msg of messages) {
+		if (msg.role === "toolResult") ids.add(msg.toolCallId);
+	}
+	return ids;
+}
+
+function formatToolCall(toolCall: ToolCall, hasResult: boolean): string {
+	// Rendered as a bracketed historical record, NOT assistant-voiced "Tool call (...)" syntax.
+	// Weaker models (e.g. Composer) imitate transcript patterns: assistant-voiced tool-call
+	// text in history teaches them to print tool calls as chat text instead of calling tools.
+	const label = getCursorReplayPromptLabel(toolCall.name);
+	if (!hasResult) {
+		// Result was pruned/summarized out of context (e.g. by a context pruner) or lost.
+		// Omit args too: a summary elsewhere covers them, and an orphaned call with args
+		// is the strongest "tool calls are just text" example we can accidentally teach.
+		return `[ran tool ${label} (call ${toolCall.id}); result pruned from context — historical record, not callable syntax]`;
+	}
 	const args = JSON.stringify(toolCall.arguments) ?? "";
-	return `Tool call (${getCursorReplayPromptLabel(toolCall.name)}, call ${toolCall.id}): ${args}`;
+	return `[ran tool ${label} (call ${toolCall.id}) args ${args} — historical record, not callable syntax]`;
 }
 
 function sanitizeSystemPromptForCursor(systemPrompt: string): string {
@@ -147,7 +165,7 @@ function sanitizeSystemPromptForCursor(systemPrompt: string): string {
 	return sanitized.trim();
 }
 
-function formatMessage(msg: Message): string | undefined {
+function formatMessage(msg: Message, toolResultIds?: Set<string>): string | undefined {
 	switch (msg.role) {
 		case "user": {
 			const text = formatContentBlocks(msg.content);
@@ -160,7 +178,8 @@ function formatMessage(msg: Message): string | undefined {
 				if (isTextBlock(block)) {
 					textParts.push(block.text);
 				} else if (isToolCallBlock(block)) {
-					textParts.push(formatToolCall(block));
+					// When no result-id set is provided (single-message estimates), assume paired.
+					textParts.push(formatToolCall(block, toolResultIds ? toolResultIds.has(block.id) : true));
 				}
 				// Omit thinking content from transcript
 			}
@@ -416,9 +435,10 @@ export function buildCursorPrompt(context: Context, options: CursorPromptOptions
 	}
 
 	const messages = normalizePiContextMessages(context.messages);
+	const toolResultIds = collectToolResultIds(messages);
 	const messageSections = messages
 		.map((msg, index) => {
-			const text = formatMessage(msg);
+			const text = formatMessage(msg, toolResultIds);
 			return text ? { index, text } : undefined;
 		})
 		.filter((section): section is { index: number; text: string } => section !== undefined);
