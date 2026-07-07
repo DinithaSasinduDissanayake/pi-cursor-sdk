@@ -65,4 +65,25 @@ describe("CursorTranscriptLeakGuard", () => {
 			'[ran tool read (call cursor-replay-1783441805760-4-tool-19) args {"path":"voice-assistant/voice_assistant_lazy.py"} — historical record, not callable syntax]';
 		expect(isCursorTranscriptLeakLine(sample)).toBe(true);
 	});
+
+	it("does not suppress leak-like text split mid-line across deltas", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const prefix = "I typed the ";
+		const suffix = "[ran tool read (call cursor-replay-1) — historical record, not callable syntax]";
+		expect(guard.processDelta(prefix)).toEqual([prefix]);
+		expect(guard.processDelta(suffix)).toEqual([]);
+		const { notice, tail } = guard.finalizeAtTurnEnd();
+		expect(notice).toBeUndefined();
+		expect(tail).toEqual([suffix]);
+	});
+
+	it("still suppresses genuine leak lines that start after a newline", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const clean = "I typed the following example.\n";
+		const leaked = "[ran tool read (call cursor-replay-1) — historical record, not callable syntax]\n";
+		expect(guard.processDelta(clean)).toEqual([clean]);
+		expect(guard.processDelta(leaked)).toEqual([]);
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(1));
+	});
 });

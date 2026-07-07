@@ -33,6 +33,7 @@ export function formatCursorTranscriptLeakSuppressionNotice(suppressedLineCount:
 
 export class CursorTranscriptLeakGuard {
 	private lineBuffer = "";
+	private atLineStart = true;
 	private leakDetected = false;
 	private suppressedLineCount = 0;
 	private suppressedText = "";
@@ -71,37 +72,42 @@ export class CursorTranscriptLeakGuard {
 			if (newlineIndex >= 0) {
 				const line = this.lineBuffer.slice(0, newlineIndex + 1);
 				this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
-				forwarded.push(...this.handleLine(line));
+				forwarded.push(...this.handleLine(line, this.atLineStart));
+				this.atLineStart = true;
 				continue;
 			}
 			if (this.lineBuffer.length > LINE_BUFFER_CAP_CHARS) {
-				forwarded.push(...this.handleLine(this.lineBuffer));
+				forwarded.push(...this.handleLine(this.lineBuffer, this.atLineStart));
 				this.lineBuffer = "";
+				this.atLineStart = false;
 				continue;
 			}
 			if (flushPartial && this.lineBuffer) {
-				forwarded.push(...this.handleLine(this.lineBuffer));
+				forwarded.push(...this.handleLine(this.lineBuffer, this.atLineStart));
 				this.lineBuffer = "";
 				break;
 			}
 			if (this.lineBuffer && !couldBeIncompleteLeakPrefix(this.lineBuffer)) {
-				forwarded.push(...this.handleLine(this.lineBuffer));
+				forwarded.push(...this.handleLine(this.lineBuffer, this.atLineStart));
 				this.lineBuffer = "";
+				this.atLineStart = false;
 			}
 			break;
 		}
 		return forwarded;
 	}
 
-	private handleLine(line: string): string[] {
-		if (!this.leakDetected && isCursorTranscriptLeakLine(line)) {
-			this.leakDetected = true;
-			this.recordSuppressedLine(line);
-			return [];
-		}
-		if (this.leakDetected && isCursorTranscriptLeakLine(line)) {
-			this.recordSuppressedLine(line);
-			return [];
+	private handleLine(line: string, atLineStart: boolean): string[] {
+		if (atLineStart) {
+			if (!this.leakDetected && isCursorTranscriptLeakLine(line)) {
+				this.leakDetected = true;
+				this.recordSuppressedLine(line);
+				return [];
+			}
+			if (this.leakDetected && isCursorTranscriptLeakLine(line)) {
+				this.recordSuppressedLine(line);
+				return [];
+			}
 		}
 		return [line];
 	}
