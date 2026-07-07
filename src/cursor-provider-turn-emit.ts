@@ -33,6 +33,7 @@ export async function emitCursorLiveTurn(emitParams: EmitCursorLiveTurnParams): 
 			await cursorLiveRuns.waitForProgress(liveRun, options?.signal);
 			await settleCursorLiveToolBatch(liveRun);
 			turnCoordinator.closeTraceBlock();
+			turnCoordinator.finalizeTurnLeakGuard();
 			await drainCursorLiveRunTurn(params.stream, params.partial, model, params.context, liveRun, 0, {
 				mode: "emit",
 				signal: options?.signal,
@@ -43,6 +44,7 @@ export async function emitCursorLiveTurn(emitParams: EmitCursorLiveTurnParams): 
 		if (caught instanceof CursorLiveRunAbortError) {
 			discardIncompleteTools({ status: "cancelled", signalAborted: true });
 			turnCoordinator.closeTraceBlock();
+			turnCoordinator.finalizeTurnLeakGuard();
 			flushPendingCursorLiveRunTraceEventsToStream(params.stream, params.partial, liveRun, {
 				includeTracesBehindQueuedTools: true,
 			});

@@ -160,19 +160,22 @@ export class CursorRunFinalizer {
 		outcome: CursorRunOutcome,
 	): Promise<void> {
 		const { stream, partial, model, context } = this.params.runnerParams;
-		prepared.runtime.turnCoordinator.closeTraceBlock();
+		const { turnCoordinator } = prepared.runtime;
+		turnCoordinator.closeTraceBlock();
 		switch (classifyCursorRunEmission(outcome)) {
 			case "cancelled":
+				turnCoordinator.finalizeTurnLeakGuard();
 				await abandonSessionCursorAgent(prepared.sessionAgentScopeKey);
 				this.pushTerminalError(partial, "aborted", getCursorRunAbortMessage(outcome));
 				break;
 			case "failed":
+				turnCoordinator.finalizeTurnLeakGuard();
 				await abandonSessionCursorAgent(prepared.sessionAgentScopeKey);
 				this.pushTerminalError(partial, "error", outcome.kind === "error" ? outcome.errorMessage : "Cursor SDK run failed.");
 				break;
 			case "finished":
 				prepared.sessionAgentLease.commitSend(context, prepared.meta.bootstrap);
-				prepared.runtime.turnCoordinator.flushText(
+				turnCoordinator.flushText(
 					outcome.kind === "finished" && hasUsableText(outcome.finalText) ? [outcome.finalText] : [],
 				);
 				applyCursorUsage(partial, model, context, prepared.meta.promptInputTokens, {

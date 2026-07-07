@@ -143,8 +143,11 @@ export class CursorSdkTurnCoordinator {
 	}
 
 	closeTraceBlock(): void {
-		this.finalizeLeakGuard();
 		this.contentEmitter.closeThinking();
+	}
+
+	finalizeTurnLeakGuard(): void {
+		this.finalizeLeakGuard();
 	}
 
 	flushText(deltas: string[]): string {

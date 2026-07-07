@@ -82,4 +82,17 @@ describe("cursor-provider-run-outcome", () => {
 			expect(outcome.assistantTextProduced).toBe(true);
 		}
 	});
+
+	it("selects finalText suffix not already emitted through streaming deltas", () => {
+		const outcome = resolveCursorRunOutcome({
+			waitResult: makeWaitResult("finished", "Hello leaked suffix"),
+			textDeltas: ["Hello"],
+			emittedText: "Hello",
+			selectFinalTextOptions: { allowPartialPrefix: true },
+		});
+		expect(outcome.kind).toBe("finished");
+		if (outcome.kind === "finished") {
+			expect(outcome.finalText).toBe(" leaked suffix");
+		}
+	});
 });
