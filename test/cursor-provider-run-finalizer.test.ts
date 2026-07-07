@@ -9,8 +9,9 @@ import { installCursorSdkProcessErrorGuard } from "../src/cursor-sdk-process-err
 import type { CursorSdkEventDebugSink } from "../src/cursor-sdk-event-debug.js";
 import type { SessionCursorAgentLease } from "../src/cursor-session-agent.js";
 import { createCursorLiveRunAccountingState } from "../src/cursor-live-run-accounting.js";
-import { asMockCursorRun } from "./helpers/cursor-provider-harness.js";
+import { asMockCursorRun, collectTextDeltas } from "./helpers/cursor-provider-harness.js";
 import { collectAssistantEvents, makeAssistantMessage, makeContext, makeModel } from "./helpers/pi-harness.js";
+import { CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX } from "../src/cursor-transcript-leak-guard.js";
 
 const { mockAwaitFinalizeCursorRunOutcome, trackedWaitCompletion } = vi.hoisted(() => {
 	const waitCompletion = new Promise<void>(() => {});
@@ -291,5 +292,86 @@ describe("CursorRunFinalizer", () => {
 		const events = await collectAssistantEvents(stream);
 		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
 		expect(events.some((event) => event.type === "error")).toBe(false);
+	});
+
+	it("finalizes leak guard on error after partial streaming", async () => {
+		const stream = createAssistantMessageEventStream();
+		const partial = makeAssistantMessage("");
+		const context = makeContext();
+		const model = makeModel();
+		const sdkProcessErrorGuard = installCursorSdkProcessErrorGuard();
+		const turnCoordinator = new CursorSdkTurnCoordinator({
+			stream,
+			partial,
+			cwd: process.cwd(),
+			useNativeToolReplay: false,
+			nativeReplayId: "replay-1",
+			textDeltas: [],
+		});
+		const prepared: CursorProviderTurnPrepareResult = {
+			agent: { agentId: "agent-1" } as SDKAgent,
+			cwd: process.cwd(),
+			payload: { text: "hello" },
+			meta: {
+				sendPlan: { mode: "incremental", reason: "incremental", resetAgent: false },
+				prompt: { text: "hello", images: [] },
+				bootstrap: false,
+				promptInputTokens: 0,
+				useNativeToolReplay: false,
+				bridgeEnabled: false,
+				nativeReplayId: "replay-1",
+				agentMode: "agent",
+			},
+			contextWindowAgentId: "agent-1",
+			textDeltas: [],
+			sessionAgentScopeKey: "scope-1",
+			sessionAgentLease: {
+				scopeKey: "scope-1",
+				poolKey: "pool-1",
+				instanceId: 1,
+				agent: { agentId: "agent-1" } as SDKAgent,
+				sendState: { bootstrapped: false, contextFingerprint: "", incrementalSendCount: 0 },
+				created: true,
+				commitSend: () => {},
+				trackRunCompletion: () => {},
+			} satisfies SessionCursorAgentLease,
+			restoreCursorSdkOutputFilter: () => {},
+			runtime: { kind: "direct", turnCoordinator },
+		};
+		const finalizer = new CursorRunFinalizer({
+			runnerParams: {
+				model,
+				context,
+				stream,
+				partial,
+				sdkEventDebugRef: {},
+			},
+			sdkEventDebug: () => undefined,
+			sdkProcessErrorGuard,
+			resolvedApiKey: () => undefined,
+		});
+
+		turnCoordinator.handleDelta({ type: "text-delta", text: "Visible prefix\n" });
+		turnCoordinator.handleDelta({
+			type: "text-delta",
+			text: '[ran tool read (call cursor-replay-1) args {"path":"a"} — historical record, not callable syntax]\n',
+		});
+
+		await finalizer.applyTerminalEvent({
+			kind: "error",
+			prepared,
+			error: new Error("provider failed after partial stream"),
+		});
+
+		stream.end();
+		const events = await collectAssistantEvents(stream);
+		const text = collectTextDeltas(events);
+		expect(text).toContain("Visible prefix\n");
+		expect(text).not.toContain("[ran tool");
+		expect(text).toContain(CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX);
+		expect(events.some((event) => event.type === "error" && event.error.errorMessage?.includes("provider failed"))).toBe(
+			true,
+		);
+		sdkProcessErrorGuard.dispose();
 	});
 });

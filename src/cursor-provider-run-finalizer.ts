@@ -194,6 +194,7 @@ export class CursorRunFinalizer {
 				signalAborted: error instanceof CursorLiveRunAbortError,
 			}),
 		);
+		prepared?.runtime.turnCoordinator.finalizeTurnLeakGuard();
 		const activeLiveRun = prepared?.runtime.liveRun;
 		if (activeLiveRun && !activeLiveRun.disposed) {
 			await cursorLiveRuns.release(activeLiveRun);
