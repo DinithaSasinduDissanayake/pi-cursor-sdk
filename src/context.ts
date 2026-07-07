@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { Context, Message, ToolCall } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import type { AgentModeOption, SDKImage } from "@cursor/sdk";
+import { resolveCursorTranscriptTagsEnabled } from "./cursor-leak-fix-env.js";
+import { applyRetryAfterAbortMarkerToUserText } from "./cursor-retry-marker.js";
 import { getCursorReplayPromptLabel } from "./cursor-tool-presentation-registry.js";
 
 export interface CursorPrompt {
@@ -23,6 +25,10 @@ export interface CursorPromptOptions {
 export const CURSOR_APPROX_CHARS_PER_TOKEN = 4;
 export const CURSOR_IMAGE_TOKEN_ESTIMATE = 1200;
 const SECTION_SEPARATOR = "\n\n";
+export const CURSOR_TRANSCRIPT_PREAMBLE =
+	"Prior conversation record for reference only. Do not imitate its formatting. Never write \"User:\", \"Assistant:\", \"Tool result\", or \"[ran tool ...]\" lines in your reply.";
+export const CURSOR_TRANSCRIPT_OPEN_TAG = "<transcript>";
+export const CURSOR_TRANSCRIPT_CLOSE_TAG = "</transcript>";
 
 export function getCursorPlanModeToolGuidanceText(
 	agentMode: AgentModeOption | undefined,
@@ -193,6 +199,25 @@ function formatMessage(msg: Message, toolResultIds?: Set<string>): string | unde
 	}
 }
 
+function formatUserMessageText(msg: Message, messages: Message[]): string | undefined {
+	const text = formatContentBlocks(msg.content);
+	if (!text) return undefined;
+	const body = applyRetryAfterAbortMarkerToUserText(text, messages);
+	return `User: ${body}`;
+}
+
+function formatMessageForPrompt(
+	msg: Message,
+	index: number,
+	messages: Message[],
+	toolResultIds?: Set<string>,
+): string | undefined {
+	if (msg.role === "user" && index === getLatestUserMessageIndex(messages)) {
+		return formatUserMessageText(msg, messages);
+	}
+	return formatMessage(msg, toolResultIds);
+}
+
 function getLatestUserMessageIndex(messages: Message[]): number {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		if (messages[index].role === "user") return index;
@@ -205,6 +230,88 @@ function getSectionCost(section: string): number {
 }
 
 function applyPromptBudget(
+	sectionsBeforeMessages: string[],
+	messageSections: Array<{ index: number; text: string }>,
+	sectionsAfterMessages: string[],
+	latestUserMessageIndex: number,
+	options: CursorPromptOptions & { wrapTranscript?: boolean },
+): string[] {
+	if (options.wrapTranscript !== true) {
+		return applyFlatPromptBudget(
+			sectionsBeforeMessages,
+			messageSections,
+			sectionsAfterMessages,
+			latestUserMessageIndex,
+			options,
+		);
+	}
+
+	const historySections = messageSections.filter((section) => section.index !== latestUserMessageIndex);
+	const latestUserSections = messageSections.filter((section) => section.index === latestUserMessageIndex);
+	const budgetedHistory = budgetMessageSections(historySections, options, {
+		requiredSections: [
+			...sectionsBeforeMessages,
+			CURSOR_TRANSCRIPT_PREAMBLE,
+			CURSOR_TRANSCRIPT_OPEN_TAG,
+			CURSOR_TRANSCRIPT_CLOSE_TAG,
+			...latestUserSections.map((section) => section.text),
+			...sectionsAfterMessages,
+		],
+	});
+	return [
+		...sectionsBeforeMessages,
+		CURSOR_TRANSCRIPT_PREAMBLE,
+		CURSOR_TRANSCRIPT_OPEN_TAG,
+		...budgetedHistory,
+		CURSOR_TRANSCRIPT_CLOSE_TAG,
+		...latestUserSections.map((section) => section.text),
+		...sectionsAfterMessages,
+	];
+}
+
+function budgetMessageSections(
+	messageSections: Array<{ index: number; text: string }>,
+	options: CursorPromptOptions,
+	extra: { requiredSections: string[] },
+): string[] {
+	const maxInputTokens = options.maxInputTokens;
+	if (maxInputTokens === undefined || !Number.isFinite(maxInputTokens) || maxInputTokens <= 0) {
+		return messageSections.map((section) => section.text);
+	}
+
+	const charsPerToken = options.charsPerToken ?? CURSOR_APPROX_CHARS_PER_TOKEN;
+	const maxChars = Math.max(1, Math.floor(maxInputTokens * charsPerToken));
+	const requiredCost = extra.requiredSections.reduce((total, section) => total + getSectionCost(section), 0);
+	let remainingChars = maxChars - requiredCost;
+	const includedMessageIndexes = new Set<number>();
+	let omittedMessageCount = 0;
+
+	for (let index = messageSections.length - 1; index >= 0; index -= 1) {
+		const section = messageSections[index];
+		if (includedMessageIndexes.has(section.index)) continue;
+		const cost = getSectionCost(section.text);
+		if (cost <= remainingChars) {
+			includedMessageIndexes.add(section.index);
+			remainingChars -= cost;
+			continue;
+		}
+		omittedMessageCount += messageSections
+			.slice(0, index + 1)
+			.filter((candidate) => !includedMessageIndexes.has(candidate.index)).length;
+		break;
+	}
+
+	const budgetNotice =
+		omittedMessageCount > 0
+			? [`[Earlier transcript omitted: ${omittedMessageCount} message${omittedMessageCount === 1 ? "" : "s"} to fit Cursor context budget]`]
+			: [];
+	return [
+		...budgetNotice,
+		...messageSections.filter((section) => includedMessageIndexes.has(section.index)).map((section) => section.text),
+	];
+}
+
+function applyFlatPromptBudget(
 	sectionsBeforeMessages: string[],
 	messageSections: Array<{ index: number; text: string }>,
 	sectionsAfterMessages: string[],
@@ -394,7 +501,7 @@ export function buildCursorIncrementalPrompt(context: Context, options: CursorPr
 	const messages = normalizePiContextMessages(context.messages);
 	const latestUserMessageIndex = getLatestUserMessageIndex(messages);
 	const latestUserMessage = latestUserMessageIndex >= 0 ? messages[latestUserMessageIndex] : undefined;
-	const latestUserText = latestUserMessage ? formatMessage(latestUserMessage) : undefined;
+	const latestUserText = latestUserMessage ? formatUserMessageText(latestUserMessage, messages) : undefined;
 	const sectionsBeforeMessages = [
 		"Continue the conversation using Cursor SDK capabilities only. Do not list, promise, or call pi-only tools from earlier context as if they were available.",
 	];
@@ -438,7 +545,7 @@ export function buildCursorPrompt(context: Context, options: CursorPromptOptions
 	const toolResultIds = collectToolResultIds(messages);
 	const messageSections = messages
 		.map((msg, index) => {
-			const text = formatMessage(msg, toolResultIds);
+			const text = formatMessageForPrompt(msg, index, messages, toolResultIds);
 			return text ? { index, text } : undefined;
 		})
 		.filter((section): section is { index: number; text: string } => section !== undefined);
@@ -449,12 +556,16 @@ export function buildCursorPrompt(context: Context, options: CursorPromptOptions
 		options.maxInputTokens === undefined
 			? options
 			: { ...options, maxInputTokens: Math.max(1, options.maxInputTokens - imageTokenReserve) };
+	const latestUserMessageIndex = getLatestUserMessageIndex(messages);
 	const parts = applyPromptBudget(
 		sectionsBeforeMessages,
 		messageSections,
 		sectionsAfterMessages,
-		getLatestUserMessageIndex(messages),
-		budgetOptions,
+		latestUserMessageIndex,
+		{
+			...budgetOptions,
+			wrapTranscript: resolveCursorTranscriptTagsEnabled(),
+		},
 	);
 	const text = parts.join(SECTION_SEPARATOR);
 
