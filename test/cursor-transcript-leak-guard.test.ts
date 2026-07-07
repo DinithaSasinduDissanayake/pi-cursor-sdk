@@ -86,4 +86,37 @@ describe("CursorTranscriptLeakGuard", () => {
 		const { notice } = guard.finalizeAtTurnEnd();
 		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(1));
 	});
+
+	it("suppresses long leak lines force-flushed before tail marker arrives", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const leakHead = '[ran tool write (call cursor-replay-1) args {"content":"';
+		// No newline yet and >500 chars — cap flush fires before tail marker is seen.
+		expect(guard.processDelta("Prefix\n")).toEqual(["Prefix\n"]);
+		expect(guard.processDelta(leakHead + "a".repeat(500))).toEqual([]);
+		const { notice, tail } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(1));
+		expect(tail).toEqual([]);
+	});
+
+	it("suppresses long leak lines with 1000-char args split across deltas", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const longArgs = "a".repeat(1000);
+		const leakHead = '[ran tool write (call cursor-replay-1) args {"content":"';
+		const leakTail = `${longArgs}"} — historical record, not callable syntax]\n`;
+		expect(guard.processDelta("Prefix\n")).toEqual(["Prefix\n"]);
+		expect(guard.processDelta(leakHead)).toEqual([]);
+		expect(guard.processDelta(leakTail)).toEqual([]);
+		const { notice, tail } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(1));
+		expect(tail).toEqual([]);
+	});
+
+	it("does not suppress prose that mentions [ran tool without cursor-replay token", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const prose = 'Docs say "[ran tool read" is not a real invocation.\n';
+		expect(isCursorTranscriptLeakLine(prose.trimEnd())).toBe(false);
+		expect(guard.processDelta(prose)).toEqual([prose]);
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBeUndefined();
+	});
 });

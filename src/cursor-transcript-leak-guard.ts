@@ -5,6 +5,7 @@ export const CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX =
 	"[pi-cursor-sdk: suppressed ";
 
 export const CURSOR_TRANSCRIPT_LEAK_LINE_PATTERNS: readonly RegExp[] = [
+	/^\s*\[ran tool \S+ \(call cursor-replay-/,
 	/^\s*\[ran tool .+ (historical record|result pruned)/,
 	/^\s*Tool (result|error) \([^)]*call cursor-replay-/,
 	/^\s*Assistant: \[ran tool/,
