@@ -33,6 +33,8 @@ import {
 	getToolFingerprint,
 } from "./cursor-provider-turn-tool-ledger.js";
 import { readCursorSdkTurnUsageFromUpdate, type CursorSdkTurnUsage } from "./cursor-usage-accounting.js";
+import { resolveCursorLeakGuardEnabled } from "./cursor-leak-fix-env.js";
+import { CursorTranscriptLeakGuard } from "./cursor-transcript-leak-guard.js";
 
 export interface CursorSdkTurnCoordinatorOptions {
 	stream: AssistantMessageEventStream;
@@ -65,6 +67,7 @@ export class CursorSdkTurnCoordinator {
 	private readonly lifecycleEmitter: CursorToolLifecycleEmitter;
 	private readonly contentEmitter;
 	private sdkTurnUsage?: CursorSdkTurnUsage;
+	private readonly leakGuard: CursorTranscriptLeakGuard;
 
 	constructor(options: CursorSdkTurnCoordinatorOptions) {
 		this.stream = options.stream;
@@ -78,6 +81,7 @@ export class CursorSdkTurnCoordinator {
 		this.textDeltas = options.textDeltas;
 		this.debugRecorder = options.debugRecorder;
 		this.contentEmitter = createTurnCoordinatorContentEmitter(options.stream, options.partial);
+		this.leakGuard = new CursorTranscriptLeakGuard(resolveCursorLeakGuardEnabled(), options.debugRecorder);
 		this.displayRouter = new CursorTurnDisplayRouter({
 			cwd: options.cwd,
 			resolvedApiKey: options.resolvedApiKey,
@@ -139,11 +143,34 @@ export class CursorSdkTurnCoordinator {
 	}
 
 	closeTraceBlock(): void {
+		this.finalizeLeakGuard();
 		this.contentEmitter.closeThinking();
 	}
 
 	flushText(deltas: string[]): string {
-		return this.contentEmitter.flushText(deltas);
+		for (const delta of deltas) {
+			for (const chunk of this.leakGuard.processDelta(delta)) {
+				this.contentEmitter.appendTextDelta(chunk);
+			}
+		}
+		this.finalizeLeakGuard();
+		return this.contentEmitter.closeText();
+	}
+
+	private forwardTextDelta(delta: string): void {
+		if (!delta) return;
+		this.textDeltas.push(delta);
+		if (this.liveRun) {
+			cursorLiveRuns.queueEvent(this.liveRun, { type: "text-delta", text: delta });
+		} else {
+			this.contentEmitter.appendTextDelta(delta);
+		}
+	}
+
+	private finalizeLeakGuard(): void {
+		const { notice, tail } = this.leakGuard.finalizeAtTurnEnd();
+		for (const chunk of tail) this.forwardTextDelta(chunk);
+		if (notice) this.forwardTextDelta(notice);
 	}
 
 	handleDelta(update: InteractionUpdate): void {
@@ -153,11 +180,8 @@ export class CursorSdkTurnCoordinator {
 			cursorLiveRuns.recordSdkTurnEnded(this.liveRun, sdkTurnUsage);
 		}
 		if (update.type === "text-delta") {
-			this.textDeltas.push(update.text);
-			if (this.liveRun) {
-				cursorLiveRuns.queueEvent(this.liveRun, { type: "text-delta", text: update.text });
-			} else {
-				this.contentEmitter.appendTextDelta(update.text);
+			for (const chunk of this.leakGuard.processDelta(update.text)) {
+				this.forwardTextDelta(chunk);
 			}
 			return;
 		}
