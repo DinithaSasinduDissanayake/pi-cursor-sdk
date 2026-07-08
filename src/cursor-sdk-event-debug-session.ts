@@ -8,6 +8,9 @@ import {
 	resolveCursorSdkEventDebugBaseDir,
 } from "./cursor-sdk-event-debug-constants.js";
 import { getCursorSessionFile, getCursorSessionScopeKey } from "./cursor-session-scope.js";
+import { formatCursorExtensionIdentityLine, resolveCursorExtensionIdentity } from "./cursor-extension-identity.js";
+import { parseEnvBoolean } from "./cursor-env-boolean.js";
+import { CURSOR_SDK_EVENT_DEBUG_ENV } from "./cursor-sdk-event-debug-constants.js";
 
 const ANONYMOUS_SESSION_SCOPE_KEY = "__anonymous__";
 
@@ -21,6 +24,7 @@ interface CursorSdkEventDebugSessionManifest {
 	sessionKey: string;
 	sessionFile?: string;
 	sessionDir: string;
+	extensionIdentity?: string;
 	createdAt: string;
 	updatedAt: string;
 	turns: Array<{
@@ -126,6 +130,9 @@ export function allocateCursorSdkEventDebugTurn(
 	};
 	manifest.sessionFile = getCursorSessionFile();
 	manifest.updatedAt = new Date().toISOString();
+	if (parseEnvBoolean(env[CURSOR_SDK_EVENT_DEBUG_ENV], false) && !manifest.extensionIdentity) {
+		manifest.extensionIdentity = formatCursorExtensionIdentityLine(resolveCursorExtensionIdentity());
+	}
 	manifest.turns.push({
 		turn: state.turnCounter,
 		artifactDir,

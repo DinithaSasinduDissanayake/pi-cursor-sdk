@@ -12,6 +12,7 @@ import { CURSOR_API_KEY_CONFIG_VALUE } from "./cursor-api-key.js";
 import { registerCursorFallbackIssueWarning } from "./cursor-fallback-warning.js";
 import { registerCursorAgentsContextDedup } from "./cursor-agents-context-registration.js";
 import { registerCursorOverflowNormalization } from "./cursor-provider-overflow.js";
+import { logCursorExtensionIdentity } from "./cursor-extension-identity.js";
 
 type CursorExtensionApi =
 	& Pick<ExtensionAPI, "registerProvider" | "registerCommand" | "on">
@@ -42,6 +43,7 @@ function registerCursorProvider(pi: Pick<ExtensionAPI, "registerProvider">, mode
 }
 
 export default async function (pi: CursorExtensionApi) {
+	logCursorExtensionIdentity();
 	// Session cwd must register before other session_start listeners that depend on it.
 	registerCursorSessionScope(pi);
 	registerCursorSessionAgentLifecycle(pi);
