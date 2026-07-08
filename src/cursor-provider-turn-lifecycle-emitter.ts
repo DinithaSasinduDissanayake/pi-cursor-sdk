@@ -3,6 +3,7 @@ import type { CursorLiveRun } from "./cursor-live-run-coordinator.js";
 import { cursorLiveRuns } from "./cursor-provider-live-run-drain.js";
 import { CursorPartialContentEmitter } from "./cursor-partial-content-emitter.js";
 import type { CursorSdkEventDebugRecorder } from "./cursor-sdk-event-debug.js";
+import { resolveCursorLifecyclePersistEnabled } from "./cursor-leak-fix-env.js";
 import {
 	CURSOR_TOOL_LIFECYCLE_DEFER_MS,
 	formatCursorToolLifecycleProgressText,
@@ -128,17 +129,27 @@ export class CursorToolLifecycleEmitter {
 
 	private emit(callId: string, toolCall: unknown, progressText: string): void {
 		this.emittedLifecycleCallIds.add(callId);
+		const persist = resolveCursorLifecyclePersistEnabled();
 		this.debugRecorder?.recordCoordinatorEvent("tool_lifecycle", {
 			callId,
 			toolName: getNormalizedCursorToolName(toolCall),
 			progressText,
 			liveRun: this.liveRun !== undefined,
+			persist,
 		});
 		if (this.liveRun) {
-			cursorLiveRuns.queueEvent(this.liveRun, { type: "thinking-delta", text: progressText });
+			cursorLiveRuns.queueEvent(this.liveRun, {
+				type: "thinking-delta",
+				text: progressText,
+				ephemeral: !persist,
+			});
 			return;
 		}
-		this.contentEmitter.appendThinkingDelta(progressText);
+		if (persist) {
+			this.contentEmitter.appendThinkingDelta(progressText);
+		} else {
+			this.contentEmitter.appendEphemeralThinkingDelta(progressText);
+		}
 	}
 }
 

@@ -153,9 +153,17 @@ function emitCursorLiveQueuedEvent(
 	run?: CursorLiveRun,
 ): void {
 	if (event.type === "thinking-delta") {
-		turn.emitter.appendThinkingDelta(event.text);
+		if (event.ephemeral) {
+			turn.emitter.appendEphemeralThinkingDelta(event.text);
+		} else {
+			turn.emitter.appendThinkingDelta(event.text);
+		}
 	} else if (event.type === "thinking-completed") {
-		turn.emitter.closeThinking();
+		if (event.ephemeral) {
+			turn.emitter.closeEphemeralThinking();
+		} else {
+			turn.emitter.closeThinking();
+		}
 	} else if (event.type === "text-delta") {
 		turn.emittedText += event.text;
 		if (run) run.emittedText += event.text;

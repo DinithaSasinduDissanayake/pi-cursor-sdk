@@ -24,8 +24,8 @@ export class CursorLiveRunAbortError extends Error {
 }
 
 export type CursorLiveQueuedEvent =
-	| { type: "thinking-delta"; text: string }
-	| { type: "thinking-completed" }
+	| { type: "thinking-delta"; text: string; ephemeral?: boolean }
+	| { type: "thinking-completed"; ephemeral?: boolean }
 	| { type: "text-delta"; text: string }
 	| { type: "tool"; tool: CursorNativeToolDisplayItem }
 	| { type: "bridge-tool"; request: CursorPiBridgeToolRequest };

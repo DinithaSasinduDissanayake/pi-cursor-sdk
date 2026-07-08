@@ -33,7 +33,7 @@ import {
 	getToolFingerprint,
 } from "./cursor-provider-turn-tool-ledger.js";
 import { readCursorSdkTurnUsageFromUpdate, type CursorSdkTurnUsage } from "./cursor-usage-accounting.js";
-import { resolveCursorLeakGuardEnabled } from "./cursor-leak-fix-env.js";
+import { resolveCursorLeakGuardEnabled, resolveCursorLifecyclePersistEnabled } from "./cursor-leak-fix-env.js";
 import { CursorTranscriptLeakGuard } from "./cursor-transcript-leak-guard.js";
 
 export interface CursorSdkTurnCoordinatorOptions {
@@ -160,6 +160,23 @@ export class CursorSdkTurnCoordinator {
 		return this.contentEmitter.closeText();
 	}
 
+	private queueLifecycleThinkingDelta(text: string): void {
+		const persist = resolveCursorLifecyclePersistEnabled();
+		if (this.liveRun) {
+			cursorLiveRuns.queueEvent(this.liveRun, {
+				type: "thinking-delta",
+				text,
+				ephemeral: !persist,
+			});
+			return;
+		}
+		if (persist) {
+			this.contentEmitter.appendThinkingDelta(text);
+		} else {
+			this.contentEmitter.appendEphemeralThinkingDelta(text);
+		}
+	}
+
 	private forwardTextDelta(delta: string): void {
 		if (!delta) return;
 		this.textDeltas.push(delta);
@@ -253,22 +270,14 @@ export class CursorSdkTurnCoordinator {
 				const progress = this.shellOutput.appendShellOutputDelta(delta);
 				const progressText = progress ? formatCursorShellOutputProgressText(progress, this.resolvedApiKey) : undefined;
 				if (progressText) {
-					if (this.liveRun) {
-						cursorLiveRuns.queueEvent(this.liveRun, { type: "thinking-delta", text: progressText });
-					} else {
-						this.contentEmitter.appendThinkingDelta(progressText);
-					}
+					this.queueLifecycleThinkingDelta(progressText);
 				}
 			}
 			return;
 		}
 		if (update.type === "summary") {
 			const summary = `Cursor summary: ${truncateCursorDisplayLine(update.summary)}\n`;
-			if (this.liveRun) {
-				cursorLiveRuns.queueEvent(this.liveRun, { type: "thinking-delta", text: summary });
-			} else {
-				this.contentEmitter.appendThinkingDelta(summary);
-			}
+			this.queueLifecycleThinkingDelta(summary);
 		}
 	}
 

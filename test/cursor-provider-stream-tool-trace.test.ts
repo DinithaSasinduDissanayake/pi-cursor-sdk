@@ -92,7 +92,13 @@ describe("streamCursor tool trace", () => {
 			expect(trace).not.toContain("call c1");
 			expect(trace).toContain("Cursor summary: Inspected files");
 			expect(text).toBe("done");
-			expect(done.message.content.map((block) => block.type)).toEqual(["thinking", "thinking", "text"]);
+			expect(done.message.content.map((block) => block.type)).toEqual(["thinking", "text"]);
+			const persistedThinking = done.message.content
+				.filter((block): block is { type: "thinking"; thinking: string } => block.type === "thinking")
+				.map((block) => block.thinking)
+				.join("");
+			expect(persistedThinking).toContain("# pi-cursor-sdk");
+			expect(persistedThinking).not.toContain("Cursor summary: Inspected files");
 		});
 
 		it("uses Cursor onStep tool-call results when delta tool completion is absent", async () => {

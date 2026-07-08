@@ -12,6 +12,8 @@ export interface CursorPartialContentEmitterOptions {
 export class CursorPartialContentEmitter {
 	private thinkingContentIndex = -1;
 	private textContentIndex = -1;
+	private ephemeralThinkingContentIndex = -1;
+	private ephemeralThinkingText = "";
 	private activityTraceChars = 0;
 	private activityTraceTruncated = false;
 
@@ -23,6 +25,11 @@ export class CursorPartialContentEmitter {
 	) {}
 
 	closeThinking(): void {
+		this.closeEphemeralThinking();
+		this.closePersistedThinking();
+	}
+
+	private closePersistedThinking(): void {
 		if (this.thinkingContentIndex < 0) return;
 		const block = this.partial.content[this.thinkingContentIndex];
 		if (block.type === "thinking") {
@@ -34,6 +41,18 @@ export class CursorPartialContentEmitter {
 			});
 		}
 		this.thinkingContentIndex = -1;
+	}
+
+	closeEphemeralThinking(): void {
+		if (this.ephemeralThinkingContentIndex < 0) return;
+		this.stream.push({
+			type: "thinking_end",
+			contentIndex: this.ephemeralThinkingContentIndex,
+			content: this.ephemeralThinkingText,
+			partial: this.partial,
+		});
+		this.ephemeralThinkingContentIndex = -1;
+		this.ephemeralThinkingText = "";
 	}
 
 	closeText(): string {
@@ -56,9 +75,33 @@ export class CursorPartialContentEmitter {
 		return this.closeText();
 	}
 
+	appendEphemeralThinkingDelta(delta: string, options?: { closeText?: boolean }): void {
+		const closeText = options?.closeText ?? this.mutuallyExclusive;
+		if (closeText) this.closeText();
+		if (!delta) return;
+		this.closePersistedThinking();
+		if (this.ephemeralThinkingContentIndex < 0) {
+			this.ephemeralThinkingContentIndex = this.partial.content.length;
+			this.ephemeralThinkingText = "";
+			this.stream.push({
+				type: "thinking_start",
+				contentIndex: this.ephemeralThinkingContentIndex,
+				partial: this.partial,
+			});
+		}
+		this.ephemeralThinkingText += delta;
+		this.stream.push({
+			type: "thinking_delta",
+			contentIndex: this.ephemeralThinkingContentIndex,
+			delta,
+			partial: this.partial,
+		});
+	}
+
 	appendThinkingDelta(delta: string, options?: { closeText?: boolean }): void {
 		const closeText = options?.closeText ?? this.mutuallyExclusive;
 		if (closeText) this.closeText();
+		this.closeEphemeralThinking();
 		if (this.activityTraceTruncated || !delta) return;
 
 		let text = delta;
