@@ -119,4 +119,35 @@ describe("CursorTranscriptLeakGuard", () => {
 		const { notice } = guard.finalizeAtTurnEnd();
 		expect(notice).toBeUndefined();
 	});
+
+	it("detects loose [ran tool line starts without call-id or historical marker", () => {
+		expect(isCursorTranscriptLeakLine("[ran tool bash\n")).toBe(true);
+		expect(isCursorTranscriptLeakLine("[ran tool read (call cursor-replay-1)")).toBe(true);
+	});
+
+	it("suppresses session 019f3e03 msg-277 loose leak variant with notice", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const prose =
+			"Starting the bulk mirror approach to finish Phase 1 today.\n\n";
+		const leaked = `[ran tool bash
+command
+cd "/home/sasindu/Documents/SLIIT Materials/Y4S1/research-project" && echo "=== Step 0: push ===" && git status && git push 2>&1
+description
+Push current branch and verify ahead count
+
+Read
+path
+/home/sasindu/Documents/SLIIT Materials/Y4S1/research-project/scripts/fetch_fkie_cad_release.py
+
+Shell
+command
+curl -sL "https://api.github.com/repos/fkie-cad/nvd-json-data-feeds/releases/latest" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['tag_name'], r['published_at'])"
+description
+Fetch latest fkie-cad release metadata
+`;
+		expect(guard.processDelta(prose).join("")).toContain("Starting the bulk mirror approach");
+		expect(guard.processDelta(leaked)).toEqual([]);
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toMatch(/suppressed 1[0-9] lines/);
+	});
 });
