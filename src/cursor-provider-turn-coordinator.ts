@@ -193,8 +193,14 @@ export class CursorSdkTurnCoordinator {
 
 	private finalizeLeakGuard(): void {
 		const { notice, tail } = this.leakGuard.finalizeAtTurnEnd();
-		for (const chunk of tail) this.forwardTextDelta(chunk);
-		if (notice) this.forwardTextDelta(notice);
+		const runAlive = this.liveRun && !this.liveRun.disposed;
+		if (runAlive) {
+			for (const chunk of tail) this.forwardTextDelta(chunk);
+			if (notice) this.forwardTextDelta(notice);
+		} else {
+			for (const chunk of tail) this.contentEmitter.appendTextDelta(chunk);
+			if (notice) this.contentEmitter.appendTextDelta(notice);
+		}
 	}
 
 	handleDelta(update: InteractionUpdate): void {

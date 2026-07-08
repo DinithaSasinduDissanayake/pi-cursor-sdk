@@ -49,4 +49,29 @@ describe("CursorSdkTurnCoordinator leak guard finalization", () => {
 		expect(text).not.toContain("[ran tool");
 		expect(text).toContain(CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX);
 	});
+
+	it("finalizeTurnLeakGuard emits notice to stream when liveRun is disposed", async () => {
+		const stream = createAssistantMessageEventStream();
+		const coordinator = new CursorSdkTurnCoordinator({
+			stream,
+			partial: makeAssistantMessage(""),
+			cwd: process.cwd(),
+			useNativeToolReplay: true,
+			nativeReplayId: "replay-abort",
+			textDeltas: [],
+			liveRun: { disposed: true } as never,
+		});
+		const leaked =
+			'[ran tool read (call cursor-replay-1) args {"path":"a"} — historical record, not callable syntax]\n';
+
+		coordinator.handleDelta({ type: "text-delta", text: leaked });
+		coordinator.closeTraceBlock();
+		coordinator.finalizeTurnLeakGuard();
+
+		stream.end();
+		const events = await collectAssistantEvents(stream);
+		const text = collectTextDeltas(events);
+		expect(text).not.toContain("[ran tool");
+		expect(text).toContain(CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX);
+	});
 });
