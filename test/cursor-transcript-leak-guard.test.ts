@@ -150,4 +150,104 @@ Fetch latest fkie-cad release metadata
 		const { notice } = guard.finalizeAtTurnEnd();
 		expect(notice).toMatch(/suppressed 1[0-9] lines/);
 	});
+
+	// === Gap 1: long-line remnant (currentLineSuppressed flag) ===
+
+	it("Gap1: long line starting with leak pattern — remainder chunks fully suppressed after cap flush", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const leakLine = "[ran tool bash " + "x".repeat(580) + "\n";
+		// Must exceed LINE_BUFFER_CAP_CHARS (500) to trigger cap flush on first delta.
+		const chunk1 = leakLine.slice(0, 501);
+		const chunk2 = leakLine.slice(501);
+		expect(guard.processDelta(chunk1)).toEqual([]); // suppressed
+		expect(guard.processDelta(chunk2)).toEqual([]); // ALSO suppressed (remainder of suppressed line)
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(2));
+	});
+
+	it("Gap1: clean partial line flush — remainder stays clean (mirror case)", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		// 600-char clean line: no leak pattern
+		const cleanLine = "This is a very long clean line " + "x".repeat(560) + "\n";
+		const chunk1 = cleanLine.slice(0, 500);
+		const chunk2 = cleanLine.slice(500);
+		expect(guard.processDelta(chunk1)).toEqual([chunk1]); // forwarded
+		expect(guard.processDelta(chunk2)).toEqual([chunk2]); // also forwarded (clean)
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBeUndefined(); // no suppression
+	});
+
+	it("Gap1: cap-flush after suppression followed by clean newline ends suppression", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		// Leaky partial line (>500 chars) then clean line
+		const leakPart = "[ran tool bash " + "x".repeat(500);
+		expect(guard.processDelta(leakPart)).toEqual([]); // suppressed (cap flush, currentLineSuppressed=true)
+		// Next delta completes line then clean line
+		expect(guard.processDelta("rest\nClean line here.\n")).toEqual(["Clean line here.\n"]); // rest suppressed + clean forwarded
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(2));
+	});
+
+	it("Gap1: cap-flush suppression does not bleed across newlines", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		// Leaky partial then clean on new line
+		const leakPart = "[ran tool bash " + "y".repeat(500);
+		expect(guard.processDelta(leakPart)).toEqual([]); // suppressed
+		// Newline + clean text
+		expect(guard.processDelta("\nThis is a normal line.\n")).toEqual(["This is a normal line.\n"]); // empty line suppressed + clean forwarded
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(2));
+	});
+
+	// === Gap 2: generic call IDs ===
+
+	it("Gap2: detects Tool result with generic call IDs", () => {
+		expect(
+			isCursorTranscriptLeakLine("Tool result (bash, call call-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b): snippet"),
+		).toBe(true);
+		expect(
+			isCursorTranscriptLeakLine("Tool error (bash, call call-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b): error"),
+		).toBe(true);
+	});
+
+	it("Gap2: suppresses Tool result with generic call ID via guard", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const leak = "Tool result (bash, call call-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b): snippet\n";
+		expect(guard.processDelta(leak)).toEqual([]);
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(1));
+	});
+
+	it("Gap2: does NOT false-positive on Tool result with short call IDs", () => {
+		// call-01 is only 4 chars — below the {4,} threshold
+		expect(isCursorTranscriptLeakLine("Tool result (read, call-01): body")).toBe(false);
+		// No 'call' keyword
+		expect(isCursorTranscriptLeakLine("Tool result (read, foo): body")).toBe(false);
+	});
+
+	// === Gap 2 + 1: MSG 375 regression fixture ===
+
+	it("Gap2: suppresses MSG375 leaked Tool result with generic call IDs", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		const leak = "Tool result (bash, call call-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b): output here\n";
+		expect(guard.processDelta(leak)).toEqual([]);
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toBe(formatCursorTranscriptLeakSuppressionNotice(1));
+	});
+
+	it("Gap2+1: suppresses MSG375 leaked long-line with generic call ID", () => {
+		const guard = new CursorTranscriptLeakGuard(true);
+		// Long line (>500 chars) starting with [ran tool, containing a generic call ID
+		const longLeak = "[ran tool bash " + "x".repeat(200) + "\nTool result (bash, call call-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b-0b0b): snippet\n";
+		// Process in chunks simulating delta boundary at 300 chars
+		const c1 = longLeak.slice(0, 300);
+		const c2 = longLeak.slice(300);
+		const out1 = guard.processDelta(c1);
+		const out2 = guard.processDelta(c2);
+		// All should be suppressed (first chunk triggers leak, flag suppresses rest)
+		expect(out1.join('')).toBe('');
+		expect(out2.join('')).toBe('');
+		const { notice } = guard.finalizeAtTurnEnd();
+		expect(notice).toMatch(/suppressed [0-9]+ lines/);
+	});
 });
