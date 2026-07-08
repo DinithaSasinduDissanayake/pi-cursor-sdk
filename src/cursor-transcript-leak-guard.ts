@@ -57,6 +57,10 @@ export function formatCursorTranscriptLeakSuppressionNotice(suppressedLineCount:
 	return `${CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX}${suppressedLineCount} ${noun} of leaked transcript-format output from the model]\n`;
 }
 
+export function hasTranscriptLeakSuppressionNotice(text: string): boolean {
+	return text.includes(CURSOR_TRANSCRIPT_LEAK_SUPPRESSION_NOTICE_PREFIX);
+}
+
 function isLeakContinuationLine(trimmed: string): boolean {
 	return LEAK_ARG_KEY_LINES.has(trimmed) || BARE_CURSOR_TOOL_NAME_LINES.has(trimmed);
 }

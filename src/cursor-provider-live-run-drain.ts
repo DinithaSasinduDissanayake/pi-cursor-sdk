@@ -27,6 +27,11 @@ import { formatCursorSdkAbortMessage, resolveCursorSdkAbortCause } from "./curso
 import { formatInactiveCursorReplayTrace } from "./cursor-native-replay-trace.js";
 import { partitionNativeToolsByActiveContext } from "./cursor-native-replay-routing.js";
 import type { CursorSdkEventDebugRecorder } from "./cursor-sdk-event-debug.js";
+import { resolveCursorLeakGuardEnabled } from "./cursor-leak-fix-env.js";
+import {
+	CursorTranscriptLeakGuard,
+	hasTranscriptLeakSuppressionNotice,
+} from "./cursor-transcript-leak-guard.js";
 
 export const DEFAULT_CURSOR_NATIVE_REPLAY_IDLE_DISPOSE_MS = 5 * 60 * 1000;
 const CURSOR_NATIVE_REPLAY_TOOL_ID_PATTERN = /^(cursor-replay-\d+-\d+)-tool-\d+$/;
@@ -97,6 +102,53 @@ async function emitTextDeltas(
 		await Promise.resolve();
 	}
 	return emitter.closeText();
+}
+
+function runAlreadyHasLeakSuppressionNotice(run: CursorLiveRun): boolean {
+	if (hasTranscriptLeakSuppressionNotice(run.emittedText)) return true;
+	return run.pendingEvents.some(
+		(event) => event.type === "text-delta" && hasTranscriptLeakSuppressionNotice(event.text),
+	);
+}
+
+async function emitGuardedFinalTextDeltas(
+	stream: AssistantMessageEventStream,
+	partial: AssistantMessage,
+	finalText: string,
+	options: {
+		transcriptLeakGuard?: CursorTranscriptLeakGuard;
+		debugRecorder?: CursorSdkEventDebugRecorder;
+		run?: CursorLiveRun;
+	},
+): Promise<void> {
+	if (!finalText) return;
+	const ownedGuard = options.transcriptLeakGuard ?? new CursorTranscriptLeakGuard(resolveCursorLeakGuardEnabled(), options.debugRecorder);
+	const deltas: string[] = [];
+	for (const delta of splitTextIntoReplayDeltas(finalText)) {
+		deltas.push(...ownedGuard.processDelta(delta));
+	}
+	if (!options.transcriptLeakGuard) {
+		const { notice, tail } = ownedGuard.finalizeAtTurnEnd();
+		deltas.push(...tail);
+		if (notice && !(options.run && runAlreadyHasLeakSuppressionNotice(options.run))) {
+			deltas.push(notice);
+		}
+	}
+	if (deltas.length > 0) {
+		await emitTextDeltas(stream, partial, deltas);
+	}
+}
+
+async function emitTranscriptLeakGuardTerminalText(
+	stream: AssistantMessageEventStream,
+	partial: AssistantMessage,
+	leakGuard: CursorTranscriptLeakGuard,
+): Promise<void> {
+	const { notice, tail } = leakGuard.finalizeAtTurnEnd();
+	const deltas = [...tail, ...(notice ? [notice] : [])];
+	if (deltas.length > 0) {
+		await emitTextDeltas(stream, partial, deltas);
+	}
 }
 
 export async function settleCursorLiveToolBatch(run: CursorLiveRun): Promise<void> {
@@ -266,7 +318,12 @@ async function emitCursorLiveRunPendingToolUseTurn(
 	context: Context,
 	run: CursorLiveRun,
 	toolResultInputTokens: number,
-	options: { mode: CursorLiveRunDrainMode; signal?: AbortSignal; debugRecorder?: CursorSdkEventDebugRecorder },
+	options: {
+		mode: CursorLiveRunDrainMode;
+		signal?: AbortSignal;
+		debugRecorder?: CursorSdkEventDebugRecorder;
+		transcriptLeakGuard?: CursorTranscriptLeakGuard;
+	},
 ): Promise<"tool_use" | "handled" | undefined> {
 	const debugRecorder = options.debugRecorder ?? run.debugRecorder;
 	const eventType = cursorLiveRuns.peekEvent(run)?.type;
@@ -282,11 +339,21 @@ async function emitCursorLiveRunPendingToolUseTurn(
 			return "handled";
 		}
 		if (!sdkTurnEnded) cursorLiveRuns.ignoreFutureSdkTurnUsage(run);
-		if (options.mode === "emit") turn.emitter.closeAll();
+		if (options.mode === "emit") {
+			if (options.transcriptLeakGuard) {
+				await emitTranscriptLeakGuardTerminalText(stream, partial, options.transcriptLeakGuard);
+			}
+			turn.emitter.closeAll();
+		}
 		emitCursorNativeToolUseTurn(stream, partial, model, context, run, toolResultInputTokens, active, debugRecorder);
 	} else {
 		if (!sdkTurnEnded) cursorLiveRuns.ignoreFutureSdkTurnUsage(run);
-		if (options.mode === "emit") turn.emitter.closeAll();
+		if (options.mode === "emit") {
+			if (options.transcriptLeakGuard) {
+				await emitTranscriptLeakGuardTerminalText(stream, partial, options.transcriptLeakGuard);
+			}
+			turn.emitter.closeAll();
+		}
 		const requests = cursorLiveRuns.collectBridgeToolBatch(run);
 		emitCursorBridgeToolUseTurn(stream, partial, model, context, run, toolResultInputTokens, requests);
 	}
@@ -300,7 +367,12 @@ export async function drainCursorLiveRunTurn(
 	context: Context,
 	run: CursorLiveRun,
 	toolResultInputTokens: number,
-	options: { mode: CursorLiveRunDrainMode; signal?: AbortSignal; debugRecorder?: CursorSdkEventDebugRecorder },
+	options: {
+		mode: CursorLiveRunDrainMode;
+		signal?: AbortSignal;
+		debugRecorder?: CursorSdkEventDebugRecorder;
+		transcriptLeakGuard?: CursorTranscriptLeakGuard;
+	},
 ): Promise<CursorLiveRunDrainOutcome> {
 	const debugRecorder = options.debugRecorder ?? run.debugRecorder;
 	debugRecorder?.recordDrainEvent("turn_start", {
@@ -382,7 +454,14 @@ export async function drainCursorLiveRunTurn(
 				turn.emitter.closeAll();
 				const finalText = trimCurrentTurnAlreadyEmittedCursorText(run.finalText ?? run.textDeltas.join(""), turn.emittedText, run.emittedText);
 				if (finalText) {
-					await emitTextDeltas(stream, partial, splitTextIntoReplayDeltas(finalText));
+					await emitGuardedFinalTextDeltas(stream, partial, finalText, {
+						transcriptLeakGuard: options.transcriptLeakGuard,
+						debugRecorder,
+						run,
+					});
+				}
+				if (options.transcriptLeakGuard) {
+					await emitTranscriptLeakGuardTerminalText(stream, partial, options.transcriptLeakGuard);
 				}
 				applyCursorUsage(partial, model, context, cursorLiveRuns.takeTurnInputTokens(run, toolResultInputTokens), {
 					turn: cursorLiveRuns.takeSdkTurnUsage(run),

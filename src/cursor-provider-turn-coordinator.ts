@@ -146,6 +146,10 @@ export class CursorSdkTurnCoordinator {
 		this.contentEmitter.closeThinking();
 	}
 
+	getTranscriptLeakGuard(): CursorTranscriptLeakGuard {
+		return this.leakGuard;
+	}
+
 	finalizeTurnLeakGuard(): void {
 		this.finalizeLeakGuard();
 	}
